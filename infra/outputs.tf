@@ -12,3 +12,13 @@ output "private_subnet_ids" {
   description = "IDs of private subnets (single element in single-AZ). Used by EKS node groups."
   value       = module.networking.private_subnet_ids
 }
+
+output "cluster_name" {
+  description = "EKS cluster name. Use with `aws eks update-kubeconfig --name <X>` to configure kubectl."
+  value       = module.compute.cluster_name
+}
+
+output "cluster_endpoint" {
+  description = "EKS API server endpoint."
+  value       = module.compute.cluster_endpoint
+}

@@ -21,3 +21,39 @@ variable "availability_zone" {
   type        = string
   default     = "us-east-1a"
 }
+
+variable "kubernetes_version" {
+  description = "EKS Kubernetes version. Pinned to N-1 for stability."
+  type        = string
+  default     = "1.32"
+}
+
+variable "cpu_node_instance_types" {
+  description = "Instance types for the CPU node group (Spot)."
+  type        = list(string)
+  default     = ["t3.medium"]
+}
+
+variable "cpu_node_min_size" {
+  description = "Minimum CPU node count. Always-on node group for platform workloads."
+  type        = number
+  default     = 1
+}
+
+variable "cpu_node_max_size" {
+  description = "Maximum CPU node count. Headroom for platform pod growth."
+  type        = number
+  default     = 2
+}
+
+variable "cpu_node_desired_size" {
+  description = "Initial CPU node count."
+  type        = number
+  default     = 1
+}
+
+variable "cpu_node_disk_size" {
+  description = "EBS root disk size (GB) per CPU node. 30 GB covers platform workloads (Prometheus, Grafana, rag-api, vector-db) with margin."
+  type        = number
+  default     = 30
+}
