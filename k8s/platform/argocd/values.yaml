@@ -1,0 +1,4 @@
+# Overrides for the argo-cd Helm chart.
+# Chart: https://github.com/argoproj/argo-helm/tree/main/charts/argo-cd
+# Defaults are sane for now; values will be tuned once the cluster runs.
+{}

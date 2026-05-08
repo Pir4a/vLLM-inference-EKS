@@ -1,0 +1,4 @@
+# Overrides for the keda Helm chart.
+# Chart: https://github.com/kedacore/charts/tree/main/keda
+# Defaults are sane for now; values will be tuned once the cluster runs.
+{}

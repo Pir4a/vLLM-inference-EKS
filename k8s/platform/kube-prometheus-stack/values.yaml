@@ -1,0 +1,5 @@
+# Overrides for the kube-prometheus-stack Helm chart.
+# Chart: https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack
+# Defaults are sane for now; values will be tuned once the cluster runs
+# (Prometheus retention, Grafana persistence, resource limits).
+{}
