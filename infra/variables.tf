@@ -23,9 +23,9 @@ variable "availability_zone" {
 }
 
 variable "kubernetes_version" {
-  description = "EKS Kubernetes version. Pinned to N-1 for stability."
+  description = "EKS Kubernetes version. Pinned to N-1 for stability (see ADR-009)."
   type        = string
-  default     = "1.32"
+  default     = "1.34"
 }
 
 variable "cpu_node_instance_types" {

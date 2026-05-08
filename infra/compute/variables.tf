@@ -14,7 +14,7 @@ variable "private_subnet_ids" {
 }
 
 variable "kubernetes_version" {
-  description = "EKS Kubernetes version (e.g. 1.32)."
+  description = "EKS Kubernetes version (e.g. 1.34)."
   type        = string
 }
 
