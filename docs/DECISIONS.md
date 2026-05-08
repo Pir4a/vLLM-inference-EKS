@@ -258,3 +258,107 @@ Tradeoffs honnêtes : c'est moins éprouvé en prod (feature TF 1.10+ datant de 
 - Versioning S3 critique — le locking en dépend, et sans lui aucun rollback possible en cas de corruption.
 - Bootstrap manuel via script CLI (création one-shot du bucket) documenté dans `infra/bootstrap.sh`.
 - Un state file par module Terraform (préfixe `<module>/terraform.tfstate` dans le bucket) → permet `apply` indépendant et lock séparé par module.
+
+---
+
+## ADR-008 — GitOps tooling : ArgoCD + App-of-Apps
+
+**Statut :** Acceptée
+**Date :** 2026-05-08
+
+### Contexte
+
+Une fois EKS provisionné via Terraform (ADR-002), il faut un mécanisme pour déployer le platform stack (Prometheus, Grafana, KEDA) et à terme la workload vLLM, et gérer leur cycle de vie. Cette couche est au-dessus de Terraform : une fois le cluster up, c'est elle qui décide ce qui tourne dedans.
+
+L'approche GitOps permet d'avoir Git comme seule source de vérité, et donc d'itérer ou rollback rapidement et simplement, ce qui correspond également très bien à la stratégie tear-down/recreate (ADR-005).
+
+Plusieurs familles d'options existent : outils GitOps déclaratifs pull-based (ArgoCD, Flux), wrappers déclaratifs push-based (Helmfile, Terraform `helm_release`), ou `helm install` direct depuis un Makefile / CI.
+
+### Décision
+
+ArgoCD avec le pattern App-of-Apps.
+
+Layout :
+
+- `k8s/argocd/applications/` : 3 Applications (ArgoCD self-managed, KEDA, kube-prometheus-stack)
+- `k8s/argocd/bootstrap/root-app.yaml` : root Application qui watche le dossier précédent
+- `k8s/argocd/README.md` : runbook bootstrap (le `helm install` initial)
+- `k8s/platform/<chart>/values.yaml` : values overrides référencées depuis les Applications via le pattern multi-source
+
+### Rationale
+
+**Mindshare marché.** ArgoCD s'impose comme le leader GitOps actuellement, dû notamment à sa graduation en tant que projet CNCF et à sa simplicité d'utilisation pour les équipes de développement, par rapport à un Flux plus low-level. Il est plus présent que Flux dans les offres SRE françaises. Une partie du choix est explicitement portfolio-driven et je l'assume : m'améliorer sur cette technologie via ce projet est directement transférable au marché.
+
+**UI.** Argo possède une GUI très user-friendly (Applications, sync status, ressources, diff vs Git) — rassurante en cas de démo et utile en simulation d'incident response.
+
+**Pull-based.** ArgoCD observe directement l'état du Git pour appliquer les changements en continu, donc pas besoin d'exposer un endpoint K8s dans la CI/CD — bénéfice côté sécurité. Honnêtement, dans mon setup actuel (single-cluster, public endpoint, pas de CI qui déploie), ce bénéfice ne se matérialise pas — il deviendrait pertinent si j'ajoutais une CI ou si je passais le cluster en endpoint privé.
+
+**Self-management.** Le chicken-and-egg : ArgoCD ne peut pas se déployer lui-même la première fois. Un `helm install` manuel one-shot suffit à le résoudre, après quoi ArgoCD reprend la main sur lui-même via l'Application `argocd` définie dans `k8s/argocd/applications/argocd.yaml`.
+
+**Multi-source.** Grâce aux Helm charts publics et aux values overrides versionnées dans ce repo via le mécanisme `$values/path`, pas besoin de fork les charts de la communauté.
+
+### Alternatives considérées
+
+- **Flux** : plus low-level, pas d'UI native (`GitRepository` + `Kustomization` au lieu de `Application`), mindshare français plus faible. Pour qui privilégie le minimalisme et n'a pas besoin de l'UI, c'est valide.
+- **Raw `helm install` depuis Makefile / CI** : simplissime à bootstrapper (pas de chicken-and-egg), mais perd le drift correction, l'UI, et la cohérence GitOps narrative. Acceptable pour single-cluster, mais perd un sujet d'interview classique.
+- **Helmfile / Terraform `helm_release`** : wrapper déclaratif mais déclenchement push-based (un humain ou la CI doit lancer l'apply). Pas du vrai GitOps au sens "Git = état désiré, le cluster reconcile en continu".
+- **ApplicationSet (au lieu d'App-of-Apps)** : pattern moderne ArgoCD qui génère N Applications à partir d'un template + un générateur (List, Cluster, Git, etc.). Pertinent en multi-cluster ou multi-env. Sur single-cluster avec 3 charts fixes, surdimensionné — App-of-Apps est plus simple à raisonner.
+
+### Conséquences
+
+- ✅ Repo structure App-of-Apps en place (`k8s/argocd/applications/`, `k8s/argocd/bootstrap/`). Ajouter une workload future = écrire une nouvelle Application CRD, pas de modif infra Terraform.
+- ✅ Runbook bootstrap documenté (`k8s/argocd/README.md`) — un recruteur peut reproduire le setup à zéro.
+- ✅ Multi-source permet de pinner le chart upstream et de versionner les values dans Git sans fork.
+- ✅ Coût runtime négligeable : 1-2 pods ArgoCD (server, repo-server, application-controller) tiennent sur le node CPU `t3.medium` existant.
+- ⚠️ Bootstrap manuel `helm install` à chaque création de cluster (chicken-and-egg). Étape ~1 min, documentée, mais friction réelle dans la stratégie tear-down/recreate (ADR-005).
+- ⚠️ Pas de stratégie secrets définie. Dès qu'un secret arrivera dans le repo (token HuggingFace, mot de passe Grafana custom), il faudra trancher entre Sealed Secrets, SOPS, et External Secrets Operator → ADR séparé à venir.
+- ❌ Pour ce projet (single-cluster, single-env, 3 charts), ArgoCD est honnêtement over-spec. Un `Makefile` avec `helm upgrade --install` ferait le même travail correctement en 30 secondes par session, sans chicken-and-egg. Le choix est assumé comme investissement portfolio, pas comme nécessité opérationnelle.
+- ❌ La stratégie tear-down/recreate ne se marie pas idéalement avec ArgoCD : à chaque destroy/recreate du cluster, ArgoCD doit reboot, re-discover Git, re-sync les 3 Applications. Une infra long-running en bénéficierait davantage.
+
+---
+
+## ADR-009 — EKS Kubernetes version : 1.34 (N-1)
+
+**Statut :** Acceptée
+**Date :** 2026-05-08
+
+### Contexte
+
+EKS supporte plusieurs versions Kubernetes simultanément avec une cadence de release upstream (~3 minor releases/an) et une politique de support standard AWS de ~14 mois par version, suivie d'extended support payant (~$0.60/h supplémentaire par cluster).
+
+Le choix de version se fait dans `infra/variables.tf` et impacte :
+
+- la stabilité opérationnelle (bugs, edge cases, ecosystem maturity)
+- la disponibilité de features récentes (sidecar containers, structured authentication config, etc.)
+- la compatibilité des charts Helm community (kube-prometheus-stack, KEDA, future addons)
+- la fenêtre avant prochaine upgrade obligatoire
+
+### Décision
+
+**Kubernetes 1.34**, soit N-1 au moment de démarrer le projet (N = 1.35 sur EKS).
+
+### Rationale
+
+**N-1 comme sweet spot stabilité.** Au moment du choix, 1.34 a déjà ~6 mois de production sur EKS, donc les bugs early adopter sont déjà remontés et patchés, les charts Helm community ont eu le temps de valider leur compatibilité, et la documentation AWS / blog posts couvrent les edge cases courants.
+
+**N (latest) écarté pour le risque early adopter.** Sur les versions tout juste GA, les charts community ne sont pas tous validés en prod, certains addons EKS (VPC CNI, EBS CSI) peuvent avoir des combos non testés, et les rapports de bugs CVE sortent plus fréquemment.
+
+**N-2 ou inférieur écarté pour la fenêtre EOL.** Plus on prend une version ancienne, plus on rapproche la fin de support standard et donc soit l'upgrade obligatoire, soit le passage en extended support payant (~$430/mois pour le cluster — non-négligeable pour un projet portfolio).
+
+**Marge d'upgrade.** Avec 1.34 = N-1 et la stratégie tear-down/recreate (ADR-005), bumper la version se fait par modification d'une seule variable Terraform et `terraform apply`. Pas d'in-place upgrade complexe à coordonner avec les workloads.
+
+### Alternatives considérées
+
+- **EKS 1.35 (N)** : version la plus récente, mais charts kube-prometheus-stack et KEDA pas tous validés en prod sur cette version au moment du choix. Bénéfice marginal au regard des features dont j'ai besoin pour le projet.
+- **EKS 1.33 (N-2)** : encore en support standard mais fenêtre plus courte avant EOL, sans bénéfice clair vs 1.34. Aurait été pertinent si une dépendance critique l'avait imposée — ce n'est pas le cas.
+- **EKS Auto Mode** : abstrait la version K8s sous-jacente (AWS la gère). Écarté côté ADR-002 (masque la gestion de nodes GPU et l'autoscaling KEDA que je veux démontrer).
+
+### Conséquences
+
+- ✅ kube-prometheus-stack 84.5.0 compatible (supporte K8s 1.30+).
+- ✅ KEDA 2.19.0 compatible (supporte K8s 1.27+).
+- ✅ ArgoCD 9.5.x compatible (supporte K8s 1.27+).
+- ✅ La stratégie tear-down/recreate (ADR-005) facilite les upgrades : un changement de version dans `infra/variables.tf` suivi d'un `terraform apply` recrée le cluster sur la nouvelle version, sans coordination avec des workloads stateful.
+- ⚠️ Fenêtre de support standard à surveiller : 1.34 sort de standard support EKS environ 14 mois après sa GA EKS — à re-vérifier sur la doc officielle AWS au moment de la prochaine session de dev. Plan : bump vers 1.35 ou 1.36 avant cette date pour rester en standard support gratuit.
+- ⚠️ Cet ADR est à mettre à jour après chaque bump de version (mettre la date, marquer le précédent comme superseded ou ajouter une note).
+- ❌ Ce projet ne tire aucun bénéfice spécifique des features 1.34 vs 1.33 ou 1.35 — le choix est conservateur, pas optimisé. Sur un projet réel avec un besoin précis (par ex. une feature passée GA récemment et utile au workload), j'aurais probablement bumped à N pour la feature.
