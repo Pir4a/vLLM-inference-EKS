@@ -1,0 +1,64 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: qwen3-4b
+  namespace: inference
+  labels:
+    app: qwen3-4b
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: qwen3-4b
+  template:
+    metadata:
+      labels:
+        app: qwen3-4b
+    spec:
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      volumes:
+        - name: cache-volume
+          persistentVolumeClaim:
+            claimName: qwen3-4b
+        # vLLM needs to access the host's shared memory for tensor parallel inference.
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "2Gi"
+      containers:
+        - name: qwen3-4b
+          image: vllm/vllm-openai:v0.20.1
+          command: ["/bin/sh", "-c"]
+          args:
+            ["vllm serve Qwen/Qwen3-4B-Instruct-2507 --enable-chunked-prefill"]
+          ports:
+            - containerPort: 8000
+          resources:
+            limits:
+              cpu: "4"
+              memory: 8Gi
+              nvidia.com/gpu: "1"
+            requests:
+              cpu: "2"
+              memory: 4Gi
+              nvidia.com/gpu: "1"
+          volumeMounts:
+            - mountPath: /root/.cache/huggingface
+              name: cache-volume
+            - name: shm
+              mountPath: /dev/shm
+          startupProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 10
+            failureThreshold: 30
+          livenessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 30
+            failureThreshold: 3
+            timeoutSeconds: 5
+          readinessProbe:
+            httpGet: { path: /health, port: 8000 }
+            periodSeconds: 5
